@@ -98,18 +98,30 @@ function capturarManual() {
     const ctx = canvas.getContext('2d');
     ctx.drawImage(state.video, 0, 0);
 
+    console.log('📸 Captura: dimensiones video', canvas.width, 'x', canvas.height);
+
     const crop = getDetectedCrop();
-    if (crop && crop.width > 0 && crop.height > 0) {
+    if (crop && crop.width > 20 && crop.height > 20) {
+        console.log('✂️ Recortando automáticamente...');
         const cropped = document.createElement('canvas');
         cropped.width = crop.width;
         cropped.height = crop.height;
-        cropped.getContext('2d').drawImage(
-            canvas,
-            crop.x, crop.y, crop.width, crop.height,
-            0, 0, crop.width, crop.height
-        );
-        state.fotoTemp = cropped;
+
+        const cropCtx = cropped.getContext('2d');
+        try {
+            cropCtx.drawImage(
+                canvas,
+                crop.x, crop.y, crop.width, crop.height,
+                0, 0, crop.width, crop.height
+            );
+            state.fotoTemp = cropped;
+            console.log('✅ Recorte exitoso:', crop.width, 'x', crop.height);
+        } catch (e) {
+            console.error('❌ Error al recortar:', e);
+            state.fotoTemp = canvas;
+        }
     } else {
+        console.log('ℹ️ Usando captura completa (sin crop)');
         state.fotoTemp = canvas;
     }
 

@@ -5,7 +5,9 @@ let detectorState = {
     isRunning: false,
     detectedBox: null,
     stability: 0,
-    previousBox: null
+    previousBox: null,
+    lastDetectionTime: 0,
+    detectionInterval: 100
 };
 
 async function initializeDetector(videoElement, canvasElement) {
@@ -35,26 +37,36 @@ function stopDetection() {
 async function detectFrame(videoElement) {
     if (!detectorState.isRunning || !detectorState.detector) return;
 
+    const now = Date.now();
+    const timeSinceLastDetection = now - detectorState.lastDetectionTime;
+
     detectorState.canvas.width = videoElement.videoWidth;
     detectorState.canvas.height = videoElement.videoHeight;
 
     const ctx = detectorState.ctx;
     ctx.drawImage(videoElement, 0, 0);
 
-    try {
-        const predictions = await detectorState.detector.detect(videoElement);
-        const documentBox = findDocumentBox(predictions);
+    if (timeSinceLastDetection >= detectorState.detectionInterval) {
+        detectorState.lastDetectionTime = now;
+        try {
+            const predictions = await detectorState.detector.detect(videoElement);
+            const documentBox = findDocumentBox(predictions);
 
-        if (documentBox) {
-            detectorState.detectedBox = documentBox;
-            drawDetectionBox(documentBox);
-            updateStability(documentBox);
-        } else {
-            detectorState.stability = 0;
-            drawNoDetection();
+            if (documentBox) {
+                detectorState.detectedBox = documentBox;
+                updateStability(documentBox);
+            } else {
+                detectorState.stability = Math.max(0, detectorState.stability - 0.05);
+            }
+        } catch (error) {
+            console.error('Error en detección:', error);
         }
-    } catch (error) {
-        console.error('Error en detección:', error);
+    }
+
+    if (detectorState.detectedBox) {
+        drawDetectionBox(detectorState.detectedBox);
+    } else {
+        drawNoDetection();
     }
 
     if (detectorState.isRunning) {
@@ -202,13 +214,19 @@ function drawStabilityIndicator(stability) {
 }
 
 function getDetectedCrop() {
-    if (!detectorState.detectedBox) return null;
+    if (!detectorState.detectedBox) {
+        console.log('⚠️ No hay box detectado');
+        return null;
+    }
 
     const box = detectorState.detectedBox;
-    return {
-        x: Math.floor(box.x),
-        y: Math.floor(box.y),
-        width: Math.floor(box.width),
-        height: Math.floor(box.height)
+    const crop = {
+        x: Math.floor(Math.max(0, box.x)),
+        y: Math.floor(Math.max(0, box.y)),
+        width: Math.floor(Math.max(10, box.width)),
+        height: Math.floor(Math.max(10, box.height))
     };
+
+    console.log('📍 Crop detectado:', crop);
+    return crop;
 }
