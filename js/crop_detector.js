@@ -13,9 +13,9 @@ async function initializeDetector(videoElement, canvasElement) {
     detectorState.ctx = canvasElement.getContext('2d');
 
     try {
-        console.log('Cargando modelo de detección...');
-        detectorState.detector = await ml5.objectDetector('coco-ssd');
-        console.log('✅ Detector listo');
+        console.log('Cargando modelo COCO-SSD con TensorFlow.js...');
+        detectorState.detector = await cocoSsd.load();
+        console.log('✅ Detector TensorFlow.js listo');
         startDetection(videoElement);
     } catch (error) {
         console.error('Error al cargar detector:', error);
@@ -42,7 +42,7 @@ async function detectFrame(videoElement) {
     ctx.drawImage(videoElement, 0, 0);
 
     try {
-        const predictions = await detectorState.detector.detect(videoElement);
+        const predictions = await detectorState.detector.estimateObjects(videoElement);
         const documentBox = findDocumentBox(predictions);
 
         if (documentBox) {
@@ -66,25 +66,28 @@ function findDocumentBox(predictions) {
     if (!predictions || predictions.length === 0) return null;
 
     const documents = predictions.filter(p => {
-        const label = p.label.toLowerCase();
+        const label = p.class.toLowerCase();
         return (label.includes('book') || label.includes('document') ||
                 label.includes('paper') || label.includes('laptop') ||
-                label.includes('phone')) && p.confidence > 0.4;
+                label.includes('phone') || label.includes('notebook') ||
+                label.includes('monitor')) && p.score > 0.4;
     });
 
     if (documents.length === 0) return null;
 
     const best = documents.reduce((prev, current) =>
-        (prev.confidence > current.confidence) ? prev : current
+        (prev.score > current.score) ? prev : current
     );
 
+    const bbox = best.bbox;
+
     return {
-        x: Math.max(0, best.x),
-        y: Math.max(0, best.y),
-        width: Math.min(detectorState.canvas.width - best.x, best.width),
-        height: Math.min(detectorState.canvas.height - best.y, best.height),
-        confidence: best.confidence,
-        label: best.label
+        x: Math.max(0, bbox[0]),
+        y: Math.max(0, bbox[1]),
+        width: Math.min(detectorState.canvas.width - bbox[0], bbox[2]),
+        height: Math.min(detectorState.canvas.height - bbox[1], bbox[3]),
+        confidence: best.score,
+        label: best.class
     };
 }
 
