@@ -1,0 +1,38 @@
+# Credenciales sensibles
+*.env
+.env.local
+.env.*.local
+credentials.json
+config.php
+
+# Caché y logs
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
+.cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Node/npm (si se usa)
+node_modules/
+package-lock.json
+yarn.lock
+
+# Carpeta de uploads (local para testing)
+uploads/
+archivos/
+temp/
+
+# Archivos del proyecto local
+.claude/
+.history/
+
+# Dependencias
+vendor/
+composer.lock
