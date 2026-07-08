@@ -6,6 +6,8 @@
     <title>Escáner - Misenvios</title>
     <link rel="stylesheet" href="css/style.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/ml5@latest/dist/ml5.min.js"></script>
 </head>
 <body>
     <!-- 1. FORMULARIO INGRESO -->
@@ -30,8 +32,9 @@
 
         <div class="video-principal">
             <video id="videoStream" autoplay playsinline></video>
-            <canvas id="canvasDetection" style="display:none;"></canvas>
+            <canvas id="canvasDetection" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; cursor: crosshair;"></canvas>
             <div id="estadoCaptura" class="estado-detector">📷 Cámara lista</div>
+            <div id="detector-status" class="detector-status">📄 Inicializando detección...</div>
         </div>
 
         <div class="controles-captura">
@@ -107,6 +110,7 @@
         </div>
     </div>
 
+    <script src="js/crop_detector.js"></script>
     <script src="js/scanner.js"></script>
 </body>
 </html>

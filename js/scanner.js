@@ -74,6 +74,11 @@ async function iniciarCaptura() {
         state.video.onloadedmetadata = () => {
             state.video.play();
             updateEstado();
+
+            setTimeout(() => {
+                const canvas = document.getElementById('canvasDetection');
+                initializeDetector(state.video, canvas);
+            }, 500);
         };
     } catch (error) {
         mostrarError('Error cámara: ' + error.message);
@@ -93,7 +98,22 @@ function capturarManual() {
     const ctx = canvas.getContext('2d');
     ctx.drawImage(state.video, 0, 0);
 
-    state.fotoTemp = canvas;
+    const crop = getDetectedCrop();
+    if (crop && crop.width > 0 && crop.height > 0) {
+        const cropped = document.createElement('canvas');
+        cropped.width = crop.width;
+        cropped.height = crop.height;
+        cropped.getContext('2d').drawImage(
+            canvas,
+            crop.x, crop.y, crop.width, crop.height,
+            0, 0, crop.width, crop.height
+        );
+        state.fotoTemp = cropped;
+    } else {
+        state.fotoTemp = canvas;
+    }
+
+    mejorarYReducir(state.fotoTemp);
     mostrarPreview();
     reproducirSonido();
 }
@@ -166,6 +186,7 @@ function mostrarGaleria() {
 }
 
 function volverAlMenu() {
+    stopDetection();
     if (state.stream) {
         state.stream.getTracks().forEach(track => track.stop());
         state.stream = null;
