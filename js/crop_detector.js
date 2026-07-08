@@ -42,7 +42,7 @@ async function detectFrame(videoElement) {
     ctx.drawImage(videoElement, 0, 0);
 
     try {
-        const predictions = await detectorState.detector.estimateObjects(videoElement);
+        const predictions = await detectorState.detector.detect(videoElement);
         const documentBox = findDocumentBox(predictions);
 
         if (documentBox) {
