@@ -45,8 +45,7 @@ cd Doc_Silog
 ```
 
 2. **Configura la base de datos**
-   - Edita `api/validar_pieza.php` con tus credenciales
-   - Edita `upload_doc.php` con la ruta de almacenamiento
+   - Crea `config.local.php` a partir de `config.local.example.php`
 
 3. **Sube vía FTP**
 ```
@@ -113,34 +112,18 @@ Sube PDF y actualiza BD
 }
 ```
 
-## 📦 Versionado de Archivos
+## 📦 Una pieza, un PDF
 
-Si `123456.pdf` existe:
-- Primera subida: `123456.pdf`
-- Segunda subida: `123456_v1.pdf`
-- Tercera subida: `123456_v2.pdf`
-
-Nota: Solo la primera versión actualiza `flash_piezas.docum_file`
+Si la pieza ya tiene `docum_file`, `validar_pieza.php` lo informa (`tiene_pdf`) y
+`upload_doc.php` responde **409** con `code: ya_tiene_pdf`; nunca se sobrescribe.
+Para reemplazarlo, un administrador debe eliminarlo primero desde el ERP.
 
 ## ⚙️ Configuración
 
-### Base de Datos
-Edita credenciales en:
-- `api/validar_pieza.php` (líneas 5-8)
-- `upload_doc.php` (líneas 5-9)
-
-```php
-$db_host = "173.231.200.130";
-$db_name = "intran23_mis_envios";
-$db_user = "intran23_Alvaro";
-$db_pass = "Alvaro1324";
-```
-
-### Directorio de Almacenamiento
-Edita en `upload_doc.php` (línea 9):
-```php
-$target_dir = "/home/intran23/archivoscompartidos.intranetflash.com/public/archivos/documentacion/";
-```
+### Credenciales y almacenamiento
+Las credenciales **no** van en el código. Copia `config.local.example.php` como
+`config.local.php` en el servidor y completa los datos de BD y la ruta de almacenamiento
+(`target_dir`). `config.local.php` está en `.gitignore` y bloqueado por `.htaccess`.
 
 ## 🎨 Personalización
 

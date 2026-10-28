@@ -3,7 +3,6 @@
 .env.local
 .env.*.local
 credentials.json
-config.php
 
 # Caché y logs
 *.log
@@ -36,3 +35,14 @@ temp/
 # Dependencias
 vendor/
 composer.lock
+
+# Configuración local con credenciales
+config.local.php
+
+# App Flutter
+APP/build/
+APP/.dart_tool/
+APP/build_log.txt
+
+# Capturas/imágenes personales sueltas (pueden contener datos personales)
+WhatsApp Image*

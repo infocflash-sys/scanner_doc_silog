@@ -1,0 +1,5 @@
+# Bloquea acceso web a archivos de configuración y utilidades internas
+<FilesMatch "^(config\.php|config\.local\.php|config\.local\.example\.php)$">
+    Require all denied
+</FilesMatch>
+Options -Indexes
