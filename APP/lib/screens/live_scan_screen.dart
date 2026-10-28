@@ -201,7 +201,14 @@ class _LiveScanScreenState extends State<LiveScanScreen> with SingleTickerProvid
         ],
       ),
     );
-    if (discard == true && mounted) Navigator.pop(context);
+    if (discard == true && mounted) {
+      for (final s in _shots.value) {
+        try {
+          File(s).deleteSync();
+        } catch (_) {}
+      }
+      Navigator.pop(context);
+    }
   }
 
   // ───────────── UI ─────────────

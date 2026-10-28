@@ -3,9 +3,11 @@ import 'package:flutter/services.dart';
 
 import 'core/theme.dart';
 import 'screens/splash_screen.dart';
+import 'services/temp_cleaner.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  TempCleaner.clean(); // restos de sesiones anteriores
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
     statusBarIconBrightness: Brightness.light,

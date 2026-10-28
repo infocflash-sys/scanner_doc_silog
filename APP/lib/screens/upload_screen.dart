@@ -8,6 +8,7 @@ import '../models/models.dart';
 import '../services/api_service.dart';
 import '../services/pdf_service.dart';
 import '../services/storage_service.dart';
+import '../services/temp_cleaner.dart';
 import '../widgets/common.dart';
 
 enum _Stage { generando, subiendo, exito, duplicado, guardadoOffline, error }
@@ -94,7 +95,10 @@ class _UploadScreenState extends State<UploadScreen> {
     }
   }
 
-  void _finish() => Navigator.of(context).popUntil((r) => r.isFirst);
+  void _finish() {
+    TempCleaner.clean();
+    Navigator.of(context).popUntil((r) => r.isFirst);
+  }
 
   @override
   Widget build(BuildContext context) {

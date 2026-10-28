@@ -2,6 +2,9 @@
 
 Sistema web profesional de captura y escaneo de documentos integrado con SILOG ERP.
 
+> 📲 **Hay una app Android** (cámara en vivo con detección y recorte automático de la hoja):
+> ver [`APP/README.md`](APP/README.md). Esta página describe la versión web original.
+
 ## 🎯 Características
 
 - ✅ Captura de múltiples fotografías desde cámara móvil/webcam
