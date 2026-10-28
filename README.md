@@ -1,184 +1,97 @@
-# 📱 Doc_Silog - Escáner de Documentos
+# 📱 Doc SILOG
 
-Sistema web profesional de captura y escaneo de documentos integrado con SILOG ERP.
+Digitalización de documentación para **SILOG ERP**: una app Android escanea los documentos de una
+pieza con la cámara del teléfono, genera un PDF y lo sube al servidor, donde queda asignado a la
+pieza.
 
-> 📲 **Hay una app Android** (cámara en vivo con detección y recorte automático de la hoja):
-> ver [`APP/README.md`](APP/README.md). Esta página describe la versión web original.
+| Parte | Carpeta | Descripción |
+|---|---|---|
+| App Android | [`APP/`](APP/README.md) | Cámara en vivo con detección y recorte automático de la hoja, filtros de legibilidad, PDF multipágina y envío sin conexión |
+| API del servidor | raíz (`api/`, `upload_doc.php`, `config.php`) | Endpoints PHP que validan la pieza y reciben el PDF |
 
-## 🎯 Características
+## 🔄 Flujo
 
-- ✅ Captura de múltiples fotografías desde cámara móvil/webcam
-- ✅ Mejora automática de imagen (contraste, brillo, conversión B&N)
-- ✅ Generación de PDF unificado desde múltiples fotos
-- ✅ Subida automática con versionado (evita sobreescrituras)
-- ✅ Integración con base de datos SILOG
-- ✅ Diseño responsive (móvil, tablet, desktop)
-- ✅ Interfaz limpia con identidad visual SILOG
+1. El usuario ingresa el **ID de la pieza** en la app.
+2. La app consulta `api/validar_pieza.php`: si la pieza no existe se informa; si **ya tiene un PDF**
+   asignado, se explica la situación y no se permite subir otro.
+3. Escanea las páginas (cámara en vivo o galería), las revisa y genera un **PDF A4**.
+4. `upload_doc.php` valida el archivo, lo guarda como `<id>.pdf` y registra el nombre en
+   `flash_piezas.docum_file`.
 
-## 🏗️ Estructura
+## 🗂️ Estructura
 
 ```
 Doc_Silog/
-├── index.php              # Redirect a scanner.php
-├── scanner.php            # Interfaz principal de escaneo
-├── upload_doc.php         # Endpoint de subida de PDFs
+├── APP/                       # App Android (Flutter)
 ├── api/
-│   └── validar_pieza.php  # Validación de pieza en BD
-├── css/
-│   └── style.css          # Estilos responsive
-├── js/
-│   └── scanner.js         # Lógica de captura y galería
-└── README.md
+│   └── validar_pieza.php      # Valida la pieza e informa si ya tiene PDF
+├── upload_doc.php             # Recibe y guarda el PDF
+├── config.php                 # Utilidades y lectura de configuración
+├── config.local.example.php   # Plantilla de credenciales (copiar a config.local.php)
+└── .htaccess                  # Bloquea el acceso web a los archivos de configuración
 ```
 
-## 🚀 Instalación
+## 🚀 Despliegue del servidor
 
-### Requisitos
-- PHP 7.4+
-- MySQL 5.7+
-- Acceso FTP al servidor
-- Servidor con HTTPS
+Requisitos: PHP 7.4+, MySQL 5.7+ y HTTPS.
 
-### Pasos
+1. Copia al servidor (FTP) `api/`, `upload_doc.php`, `config.php`, `.htaccess` y
+   `config.local.example.php`.
+2. En el servidor, copia `config.local.example.php` como **`config.local.php`** y completa los datos
+   de la base de datos y la ruta de almacenamiento (`target_dir`). Este archivo no se versiona.
+3. Comprueba que PHP pueda escribir en `target_dir`.
+4. En la app, la URL del servidor se define en `APP/lib/core/config.dart`.
 
-1. **Descarga los archivos**
-```bash
-git clone https://github.com/tu-usuario/Doc_Silog.git
-cd Doc_Silog
-```
+> **Versión web anterior:** este repositorio ya no incluye la página web de escaneo
+> (`scanner.php`, `index.php`, `css/`, `js/`). Si esos archivos siguen en el servidor, elimínalos:
+> quedarían publicados sin mantenimiento.
 
-2. **Configura la base de datos**
-   - Crea `config.local.php` a partir de `config.local.example.php`
+## 🔌 API
 
-3. **Sube vía FTP**
-```
-/home/intran23/files.intranetflash.com/
-├── index.php
-├── scanner.php
-├── upload_doc.php
-├── api/ (carpeta)
-├── css/ (carpeta)
-└── js/ (carpeta)
-```
+### `GET /api/validar_pieza.php?id_pieza=<id>`
 
-4. **Accede a**
-```
-https://files.intranetflash.com/scanner.php
-```
-
-## 📋 Flujo de Uso
-
-1. Usuario ingresa **ID de Pieza** desde ERP
-2. Sistema valida pieza en BD
-3. Selecciona **Cámara Móvil** o **Webcam**
-4. Captura múltiples **fotos del documento**
-5. Confirma cada captura (preview + mejora automática)
-6. Gestiona galería (eliminar, reordenar)
-7. Genera **PDF unificado**
-8. Sube automáticamente con **versionado**
-9. Actualiza BD con nombre de archivo
-
-## 🔌 API Endpoints
-
-### GET `/api/validar_pieza.php`
-Valida existencia de pieza en BD
-
-**Parámetros:**
-- `id_pieza` (string): ID de la pieza
-
-**Respuesta:**
 ```json
 {
   "status": "success",
   "data": {
     "id": "123456",
     "cliente": "Cliente XYZ",
-    "fecha_creacion": "2026-07-08"
+    "fecha_creacion": "2026-07-08 06:50:04",
+    "tiene_pdf": false,
+    "docum_file": null
   }
 }
 ```
 
-### POST `/upload_doc.php`
-Sube PDF y actualiza BD
+Errores: `404` con `code: no_encontrada` si la pieza no existe; `400` si el ID es inválido.
 
-**Parámetros:**
-- `id_pieza` (string): ID de la pieza
-- `pdf_file` (file): Archivo PDF
+### `POST /upload_doc.php`
 
-**Respuesta:**
+Campos `multipart/form-data`: `id_pieza` y `pdf_file`.
+
 ```json
-{
-  "status": "success",
-  "file": "123456.pdf",
-  "version": 1,
-  "id_pieza": "123456"
-}
+{ "status": "success", "file": "123456.pdf", "version": 1, "id_pieza": "123456" }
 ```
 
-## 📦 Una pieza, un PDF
-
-Si la pieza ya tiene `docum_file`, `validar_pieza.php` lo informa (`tiene_pdf`) y
-`upload_doc.php` responde **409** con `code: ya_tiene_pdf`; nunca se sobrescribe.
-Para reemplazarlo, un administrador debe eliminarlo primero desde el ERP.
-
-## ⚙️ Configuración
-
-### Credenciales y almacenamiento
-Las credenciales **no** van en el código. Copia `config.local.example.php` como
-`config.local.php` en el servidor y completa los datos de BD y la ruta de almacenamiento
-(`target_dir`). `config.local.php` está en `.gitignore` y bloqueado por `.htaccess`.
-
-## 🎨 Personalización
-
-### Colores (CSS)
-En `css/style.css` (líneas 2-13):
-```css
---primary: #2d7a3e;        /* Verde SILOG */
---primary-dark: #1f5629;
---warning: #ffc107;        /* Botón amarillo */
-```
-
-### Textos
-En `scanner.php`, edita los `<h1>` y etiquetas de botones
+| Código | Significado |
+|---|---|
+| `409` + `code: ya_tiene_pdf` | La pieza ya tiene un PDF asignado: **nunca se sobrescribe**. Para reemplazarlo, un administrador debe eliminarlo primero desde el ERP |
+| `413` | El PDF supera el tamaño máximo (25 MB por defecto) |
+| `415` | El archivo no es un PDF válido (se revisa la firma `%PDF-`, no solo la extensión) |
 
 ## 🔒 Seguridad
 
-⚠️ **NOTA IMPORTANTE:** Esta versión NO incluye autenticación. 
+- Las credenciales **no están en el código**: se leen de `config.local.php` o de variables de entorno
+  (`SILOG_DB_HOST`, `SILOG_DB_NAME`, `SILOG_DB_USER`, `SILOG_DB_PASS`, `SILOG_TARGET_DIR`).
+- El guardado es atómico y no sobrescribe; la BD solo se actualiza si `docum_file` sigue vacío.
+- El ID de pieza se restringe a `[A-Za-z0-9_-]` (también forma el nombre del archivo).
 
-**Recomendaciones antes de producción:**
-- [ ] Implementar sesiones de usuario
-- [ ] Validar tipo MIME de archivos
-- [ ] Sanitizar nombres de archivo
-- [ ] Agregar rate limiting
-- [ ] Encriptar conexión (HTTPS)
-- [ ] Usar CSRF tokens
-- [ ] Control de acceso a PDFs
+**Pendiente:** los endpoints todavía **no exigen autenticación**. Antes de exponerlos de forma
+amplia conviene añadir un token o login.
 
-## 🐛 Troubleshooting
-
-### "Error cámara: Permission denied"
-- Navegador no tiene permisos
-- Verificar HTTPS activo
-- Permitir acceso en navegador
-
-### "Pieza no encontrada"
-- ID incorrecto
-- Pieza no existe en BD
-- Verificar conexión a BD
-
-### "Error al guardar archivo"
-- Permisos insuficientes en carpeta
-- Espacio en disco lleno
-- Ruta incorrecta
+> ⚠️ Una versión anterior del historial de git contiene las credenciales de la base de datos.
+> Cambia esa contraseña en el servidor.
 
 ## 📝 Licencia
 
-Desarrollado para SILOG ERP - Intranet Flash
-
-## 👨‍💻 Autor
-
-Generado con Claude Code
-
----
-
-**Última actualización:** Julio 2026
+Desarrollado para SILOG ERP - Intranet Flash.
