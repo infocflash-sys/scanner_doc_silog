@@ -197,3 +197,92 @@ flutter build apk --release --split-per-abi   # APK por arquitectura
   configurado con `flutter config --jdk-dir`.
 - **Regenerar el ícono:** `python tools/gen_icon.py` y luego `dart run flutter_launcher_icons`.
 - **Sin acceso al teléfono** no se puede depurar la cámara: pedir al usuario la captura o el texto del error.
+
+---
+
+## 12. Despliegue al servidor (2026-10-28, tarde)
+
+- La subida de un PDF de 20 MB fallaba con «Error al guardar archivo. Verifica permisos o ruta.»: ese texto era
+  del `upload_doc.php` **antiguo** que seguía en `files.intranetflash.com` (los PHP endurecidos nunca se habían
+  desplegado; por eso tampoco funcionaba el aviso «la pieza ya tiene PDF»: el `validar_pieza.php` antiguo no
+  devolvía `docum_file`/`tiene_pdf`).
+- Se subieron por FTP (puerto 21; el 22 rechaza la autenticación) a la carpeta `files.intranetflash.com/`:
+  `config.php`, `config.local.php` (credenciales; bloqueado por `.htaccess`), `.user.ini`
+  (`upload_max_filesize=50M`, `post_max_size=55M`), `.htaccess` (se añadió el bloqueo de config), `upload_doc.php`
+  y `api/validar_pieza.php`. Copia de los originales en `backup_servidor/` (ignorada por git).
+- `archivoscompartidos.intranetflash.com/upload_doc.php` es **otra aplicación** (recibe firmas JPG): no se tocó.
+- Verificado sin escribir datos (ID inexistente): validar → 404 `no_encontrada`; subida de 3 y 20 MB aceptada por PHP.
+- App: tope por página 700 KB y 20 MB por PDF (`maxPdfBytes`); las páginas más pesadas se reducen automáticamente.
+- Pendiente: probar en campo la subida larga y el rechazo de una segunda subida a la misma pieza.
+
+## 13. Login (2026-10-28)
+
+- Credenciales del ERP: tabla `users` (solo lectura), `username` único, `active = 1`. Clave estilo Ion Auth sin salt
+  almacenado: `hash = salt(10) + substr(sha1(salt + clave), 0, 30)` (`verify_password` en `config.php`).
+- `POST /api/login.php` → token firmado (HMAC-SHA256, secreto `auth_secret` en `config.local.php`), 24 h, sin tablas
+  nuevas. La app lo envía en la cabecera `X-Silog-Token`; `validar_pieza.php` y `upload_doc.php` lo exigen
+  (401 `sesion`) y reconsultan `active` en cada petición.
+- Bloqueo: 3 fallos por usuario → 5 min (429 `bloqueado`, `retry_after`); además 15 fallos por IP. Estado en archivos del
+  temporal del servidor (`silog_auth/`).
+- El PDF se guarda como `<id_pieza>-<id_usuario>.pdf` (queda en `docum_file`).
+- App: `AuthService` (sesión en `data/sesion.json`, solo token), `LoginScreen`, `AuthGate`; botón «Cerrar sesión» en
+  Inicio; si la sesión vence durante un envío el PDF queda en pendientes y se reenvía tras ingresar.
+- Las versiones anteriores de la app dejan de funcionar (el servidor exige sesión): instalar el APK nuevo en todos los equipos.
+
+## 14. Flujo lineal, límite de 20 MB y tiempos (2026-10-28)
+
+- **Sin cola de pendientes** (decisión del usuario): se sube y recién después se toma otro documento. Se eliminó la cola
+  de `StorageService` y su tarjeta en Inicio. Si falla por red, la pantalla de subida ofrece «Reintentar» (el PDF se conserva
+  mientras se siga en ella); si vence la sesión, «Iniciar sesión» (login modal) y el mismo PDF se reenvía solo.
+- **Límite de subida: 20 MB por documento** (`AppConfig.maxPdfMb`). Aviso en la galería y en la pantalla de subida, con el
+  peso real del PDF antes de subir. Si se pasa: primero reducción normal por página (700 KB c/u máx., piso 1000 px/q58);
+  luego reducción forzada (hasta 600 px/q35); si aun así supera, no se sube y se pide quitar páginas (`PdfTooLargeException`).
+- **Timeouts:** app 10 min (envío y recepción); servidor `.user.ini` `max_execution_time` y `max_input_time` = 600.
+- Dato de campo: 11 páginas ≈ 4,8 MB (~440 KB/página).
+
+## 15. Control de versiones remoto (2026-10-28)
+
+- **Tabla nueva `silog_app_config`** (clave/valor) en `intran23_mis_envios`; no se tocó ninguna tabla existente.
+  Valores iniciales: `app_activa=1`, `build_minimo=2`, `mensaje`, `url_descarga` (vacío).
+- La app envía `X-Silog-Build` (constante `AppConfig.build`, = al número tras «+» de `pubspec.yaml`: hoy **1.1.0+2**).
+  El servidor (`check_app_version()` en login y `require_auth`) responde **426 `version`** si `app_activa=0` o el build < `build_minimo`.
+  `GET /api/estado.php` (público) informa si la versión está permitida; la app lo consulta al abrir y al volver a primer plano.
+- Pantalla de bloqueo (`BlockedScreen`) cubre toda la app, con el mensaje y, si hay `url_descarga`, botón para copiar el enlace.
+- **Cómo operar (SQL):**
+  - Dar de baja versiones viejas: `UPDATE silog_app_config SET valor='3' WHERE clave='build_minimo';`
+  - Parada de emergencia: `UPDATE silog_app_config SET valor='0' WHERE clave='app_activa';` (volver a `'1'` para reactivar).
+  - Mensaje / enlace: filas `mensaje` y `url_descarga`.
+  - Al publicar una versión nueva: subir `version:` en pubspec y `AppConfig.build` a la vez; luego subir `build_minimo`.
+- Si la tabla no responde, el servidor NO bloquea (se registra el error en el log).
+- Galería: aro giratorio con una barrita por página a procesar (`SegmentRing`), compacto en la parte superior.
+
+## 16. Galería con lotes grandes (2026-10-28, misma versión 1.1.0+2)
+
+- Reporte de campo: con lotes de 10-20 páginas no se veía el aro de progreso y el recorte de la hoja salía mal.
+  No se reprodujo en pruebas (con 4-8 páginas sintéticas el aro y la detección funcionaban), pero la causa probable en equipos
+  reales era la **saturación**: se lanzaban todas las páginas a la vez (10-20 procesos decodificando fotos de varios MP).
+- Cambios en `review_screen.dart`: las páginas se procesan **de a 2** (`_maxParallel`), con **un reintento** si una falla;
+  el aro aparece desde el primer fotograma y avanza de a una página; un **único aviso** por lote en lugar de uno por página.
+- No se tocó `pubspec.yaml` ni `AppConfig.build` (sigue 1.1.0+2): la tabla `silog_app_config` no cambia.
+
+## 17. Sesión persistente y detección de bordes más robusta (misma versión 1.1.0+2)
+
+- **Sesión**: el token sigue durando 24 h (servidor) y ahora se cierra además tras **8 h sin usar la app**
+  (ventana deslizante: cada petición y cada vuelta a la app la renuevan). `AuthService.alVolver()` se llama al
+  reanudar la app y recupera la sesión del disco si no está en memoria. Se recuerda el **último usuario**
+  (`data/usuario.txt`, solo el nombre) para precargarlo en el login. La clave nunca se guarda.
+- **Detección** (`doc_vision.dart`): el método original (Otsu) se mantiene como base; se añaden candidatos con
+  umbral más bajo (hojas con sombra) y apertura morfológica (hoja pegada a manchas claras). Solo reemplaza al
+  original si el candidato es casi un cuadrilátero perfecto (fill ≥ 0,94) y abarca entre 1,08x y 1,5x más;
+  en 18 casos sintéticos nunca empeoró y mejoró los de sombra media. Con fondo claro + sombra fuerte el umbral
+  global sigue fallando: ahí se usa ✂ para ajustar a mano.
+
+## 18. Captura manual con esquinas a mano (misma versión 1.1.0+2)
+
+Flujo estilo CamScanner: **disparador manual** (se quitó el disparo automático y el análisis en vivo; la cámara
+enfoca antes de disparar y el toque enfoca un punto) → pantalla **«Ubica las esquinas»** (`CropScreen`, 4 puntos
+grandes que se mueven con el dedo, con lupa; propone las esquinas detectadas pero manda lo que el usuario deje) →
+**«Confirmar y procesar»**: recorta/endereza con esos límites, aplica el filtro Documento y reduce tamaño, con aro de
+progreso → la página entra **ya terminada** a la galería (`ReviewScreen.initialPages`), que ya no tiene cola de
+procesamiento (solo reprocesa al cambiar filtro, girar o re-recortar). Galería del teléfono: mismo paso, foto por foto.
+`capture_flow.procesarFoto()` concentra el flujo. Se retoma con «Volver a tomar».

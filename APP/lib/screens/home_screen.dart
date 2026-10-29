@@ -2,9 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 
+import '../core/config.dart';
 import '../core/theme.dart';
 import '../models/models.dart';
 import '../services/api_service.dart';
+import '../services/auth_service.dart';
 import '../services/storage_service.dart';
 import '../widgets/common.dart';
 import 'pieza_screen.dart';
@@ -19,10 +21,8 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final _ctrl = TextEditingController();
   bool _loading = false;
-  bool _retrying = false;
   String? _error;
   List<HistorialItem> _historial = [];
-  List<PendingUpload> _pendientes = [];
 
   @override
   void initState() {
@@ -45,12 +45,26 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   Future<void> _cargar() async {
     final h = await StorageService.historial();
-    final p = await StorageService.pendientes();
     if (!mounted) return;
     setState(() {
       _historial = h;
-      _pendientes = p;
     });
+  }
+
+  Future<void> _cerrarSesion() async {
+    final salir = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        backgroundColor: Brand.surface,
+        title: const Text('Cerrar sesión'),
+        content: const Text('¿Quieres salir de tu cuenta?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('Cancelar')),
+          TextButton(onPressed: () => Navigator.pop(c, true), child: const Text('Salir')),
+        ],
+      ),
+    );
+    if (salir == true) await AuthService.instance.cerrar(); // el AuthGate muestra el login
   }
 
   Future<void> _validar() async {
@@ -82,39 +96,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _reintentar() async {
-    setState(() => _retrying = true);
-    var ok = 0, descartados = 0;
-    for (final p in await StorageService.pendientes()) {
-      try {
-        final r = await ApiService.instance.subirPdf(p.file, p.idPieza);
-        await StorageService.addHistorial(HistorialItem(
-          id: p.idPieza,
-          cliente: '-',
-          file: r.file,
-          paginas: 0,
-          fecha: DateTime.now(),
-        ));
-        await StorageService.borrarPendiente(p);
-        ok++;
-      } on ApiException catch (e) {
-        if (e.offline) break;
-        // Rechazo definitivo (p. ej. la pieza ya tiene PDF): se descarta para no reintentar eternamente.
-        await StorageService.borrarPendiente(p);
-        descartados++;
-      }
-    }
-    await _cargar();
-    if (!mounted) return;
-    setState(() => _retrying = false);
-    final extra = descartados > 0 ? ', $descartados descartado(s) (la pieza ya tenía PDF)' : '';
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(ok + descartados == 0
-          ? 'Sigue sin haber conexión. Se reintentará más tarde.'
-          : '$ok enviado(s)$extra'),
-    ));
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -130,14 +111,40 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   children: [
                     const LogoMark(size: 52),
                     const SizedBox(width: 14),
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text('Doc SILOG',
-                            style: TextStyle(fontSize: 24, fontWeight: FontWeight.w800, color: Brand.text)),
-                        Text('Escáner inteligente de documentos',
-                            style: TextStyle(fontSize: 13, color: Brand.muted.withValues(alpha: 0.9))),
-                      ],
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.center,
+                            children: [
+                              const Text('Doc SILOG',
+                                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.w800, color: Brand.text)),
+                              const SizedBox(width: 8),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                decoration: BoxDecoration(
+                                  color: Brand.green.withValues(alpha: 0.14),
+                                  borderRadius: BorderRadius.circular(20),
+                                  border: Border.all(color: Brand.green.withValues(alpha: 0.5)),
+                                ),
+                                child: Text(AppConfig.versionLabel,
+                                    style: const TextStyle(
+                                        fontSize: 11, fontWeight: FontWeight.w700, color: Brand.green)),
+                              ),
+                            ],
+                          ),
+                          Text(AuthService.instance.session.value?.nombre ?? 'Escáner inteligente de documentos',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(fontSize: 13, color: Brand.muted.withValues(alpha: 0.9))),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Cerrar sesión',
+                      icon: const Icon(Icons.logout_rounded, color: Brand.muted),
+                      onPressed: _cerrarSesion,
                     ),
                   ],
                 ).animate().fadeIn(duration: 500.ms).slideY(begin: -0.2),
@@ -179,33 +186,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                     ],
                   ),
                 ).animate().fadeIn(delay: 150.ms, duration: 500.ms).slideY(begin: 0.15),
-                if (_pendientes.isNotEmpty) ...[
-                  const SizedBox(height: 16),
-                  AppCard(
-                    borderColor: Brand.warn.withValues(alpha: 0.5),
-                    child: Row(
-                      children: [
-                        const Icon(Icons.cloud_off_rounded, color: Brand.warn, size: 30),
-                        const SizedBox(width: 14),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text('${_pendientes.length} documento(s) por enviar',
-                                  style: const TextStyle(fontWeight: FontWeight.w700, color: Brand.text)),
-                              const Text('Guardados sin conexión',
-                                  style: TextStyle(color: Brand.muted, fontSize: 13)),
-                            ],
-                          ),
-                        ),
-                        _retrying
-                            ? const SizedBox(
-                                width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 3))
-                            : TextButton(onPressed: _reintentar, child: const Text('Enviar')),
-                      ],
-                    ),
-                  ).animate().fadeIn(),
-                ],
                 if (_historial.isNotEmpty) ...[
                   const SizedBox(height: 28),
                   const Text('Recientes',

@@ -85,11 +85,102 @@ List<double>? _quadFromLum(Uint8List lum, int w, int h) {
   }
   final invert = total > 0 && above / total < 0.25;
 
-  final mask = Uint8List(w * h);
-  for (var i = 0; i < w * h; i++) {
-    mask[i] = ((lum[i] > th) != invert) ? 1 : 0;
+  // Varios candidatos con umbrales/limpiezas distintos; se elige el mejor (ver más abajo).
+  // El primero es el método original; los otros rescatan hojas con sombra o pegadas a manchas.
+  final r = math.max(1, (math.min(w, h) / 150).round());
+  _QuadCand? base;
+  final extra = <_QuadCand>[];
+  final specs = <({int t, bool open})>[
+    (t: th, open: false),
+    (t: th, open: true),
+    (t: invert ? math.min(255, (th * 1.2).round()) : (th * 0.8).round(), open: false),
+    (t: invert ? math.min(255, (th * 1.2).round()) : (th * 0.8).round(), open: true),
+  ];
+  for (var i = 0; i < specs.length; i++) {
+    var m = Uint8List(w * h);
+    for (var j = 0; j < w * h; j++) {
+      m[j] = ((lum[j] > specs[i].t) != invert) ? 1 : 0;
+    }
+    if (specs[i].open) m = _open(m, w, h, r);
+    final c = _analyze(m, w, h);
+    if (c == null) continue;
+    if (i == 0) {
+      base = c;
+    } else {
+      extra.add(c);
+    }
+  }
+  if (base == null) {
+    // El método original no encontró hoja: se acepta el candidato más "lleno" de los otros.
+    _QuadCand? best;
+    for (final c in extra) {
+      if (c.fill >= 0.8 && (best == null || c.fill > best.fill)) best = c;
+    }
+    return best?.quad;
+  }
+  // Si otro candidato abarca claramente más hoja (sombras) y sigue siendo casi un cuadrilátero
+  // perfecto, se prefiere: el original se quedaba corto en las esquinas con sombra.
+  var chosen = base;
+  for (final c in extra) {
+    if (c.fill >= 0.94 && c.frac >= base.frac * 1.08 && c.frac <= base.frac * 1.5 && c.frac > chosen.frac) {
+      chosen = c;
+    }
+  }
+  // Si el original recortó una esquina por un saliente (fill bajo), prefiere uno más limpio.
+  if (base.fill < 0.8) {
+    for (final c in extra) {
+      if (c.fill > chosen.fill + 0.08 && c.frac >= base.frac * 0.85) chosen = c;
+    }
+  }
+  return chosen.quad;
+}
+
+class _QuadCand {
+  final List<double> quad;
+  final double fill; // región / cuadrilátero
+  final double frac; // cuadrilátero / imagen
+  const _QuadCand(this.quad, this.fill, this.frac);
+}
+
+/// Apertura binaria (erosión + dilatación): corta puentes finos entre la hoja y manchas claras.
+Uint8List _open(Uint8List m, int w, int h, int r) {
+  Uint8List pass(Uint8List src, bool erode) {
+    final tmp = Uint8List(src.length);
+    for (var y = 0; y < h; y++) {
+      for (var x = 0; x < w; x++) {
+        var v = erode ? 1 : 0;
+        for (var k = math.max(0, x - r); k <= math.min(w - 1, x + r); k++) {
+          final b = src[y * w + k];
+          if (erode ? b == 0 : b == 1) {
+            v = erode ? 0 : 1;
+            break;
+          }
+        }
+        tmp[y * w + x] = v;
+      }
+    }
+    final out = Uint8List(src.length);
+    for (var x = 0; x < w; x++) {
+      for (var y = 0; y < h; y++) {
+        var v = erode ? 1 : 0;
+        for (var k = math.max(0, y - r); k <= math.min(h - 1, y + r); k++) {
+          final b = tmp[k * w + x];
+          if (erode ? b == 0 : b == 1) {
+            v = erode ? 0 : 1;
+            break;
+          }
+        }
+        out[y * w + x] = v;
+      }
+    }
+    return out;
   }
 
+  return pass(pass(m, true), false);
+}
+
+/// Componente clara central de [mask] y sus esquinas (extremos en las diagonales), validadas.
+_QuadCand? _analyze(Uint8List mask, int w, int h) {
   // Componentes conexas (4-vecinos)
   final labels = Int32List(w * h);
   final stack = Int32List(w * h);
@@ -206,7 +297,7 @@ List<double>? _quadFromLum(Uint8List lum, int w, int h) {
     out.add((p[0] / (w - 1)).clamp(0.0, 1.0));
     out.add((p[1] / (h - 1)).clamp(0.0, 1.0));
   }
-  return out;
+  return _QuadCand(out, sizes[chosen] / area, frac);
 }
 
 int _otsu(Uint8List lum) {

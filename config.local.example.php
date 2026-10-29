@@ -10,5 +10,7 @@ return [
     'db_user'    => 'CAMBIAR',
     'db_pass'    => 'CAMBIAR',
     'target_dir' => '/home/intran23/archivoscompartidos.intranetflash.com/public/archivos/documentacion/',
+    // Secreto para firmar sesiones: largo y aleatorio (php -r "echo bin2hex(random_bytes(32));")
+    'auth_secret' => 'CAMBIAR',
     'max_bytes'  => 25 * 1024 * 1024,
 ];

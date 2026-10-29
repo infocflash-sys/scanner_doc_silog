@@ -23,14 +23,13 @@ class _PiezaScreenState extends State<PiezaScreen> {
     setState(() => _scanning = true);
     try {
       final res = await capturar(context, limit: AppConfig.maxPages, galeria: galeria);
-      if (!mounted || res == null) return;
+      if (!mounted || res == null || res.isEmpty) return;
       await Navigator.push(
         context,
         MaterialPageRoute(
           builder: (_) => ReviewScreen(
             info: widget.info,
-            initialPaths: res.paths,
-            autoDetect: res.autoDetect,
+            initialPages: res,
           ),
         ),
       );

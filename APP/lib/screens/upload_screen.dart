@@ -1,17 +1,18 @@
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 
 import '../core/theme.dart';
+import '../core/config.dart';
 import '../models/models.dart';
 import '../services/api_service.dart';
 import '../services/pdf_service.dart';
 import '../services/storage_service.dart';
 import '../services/temp_cleaner.dart';
 import '../widgets/common.dart';
+import 'login_screen.dart';
 
-enum _Stage { generando, subiendo, exito, duplicado, guardadoOffline, error }
+enum _Stage { generando, subiendo, exito, duplicado, sinConexion, sesion, demasiado, error }
 
 class UploadScreen extends StatefulWidget {
   final PiezaInfo info;
@@ -27,7 +28,8 @@ class _UploadScreenState extends State<UploadScreen> {
   double _progress = 0;
   String _msg = '';
   UploadResult? _result;
-  File? _pdf;
+  PdfBuild? _build;
+  PdfTooLargeException? _grande;
 
   bool get _working => _stage == _Stage.generando || _stage == _Stage.subiendo;
 
@@ -43,12 +45,12 @@ class _UploadScreenState extends State<UploadScreen> {
       _progress = 0;
     });
     try {
-      _pdf ??= await PdfService.build(widget.info.id, widget.paths);
+      _build ??= await PdfService.build(widget.info.id, widget.paths);
       if (!mounted) return;
       setState(() => _stage = _Stage.subiendo);
 
       final r = await ApiService.instance.subirPdf(
-        _pdf!,
+        _build!.file,
         widget.info.id,
         onProgress: (p) {
           if (mounted) setState(() => _progress = p);
@@ -73,12 +75,13 @@ class _UploadScreenState extends State<UploadScreen> {
           _msg = e.message;
           _stage = _Stage.duplicado;
         });
+      } else if (e.sesion) {
+        // Sesión vencida: se vuelve a ingresar y el mismo PDF se reintenta (flujo lineal, sin cola).
+        setState(() => _stage = _Stage.sesion);
       } else if (e.offline) {
-        await StorageService.guardarPendiente(_pdf!, widget.info.id);
-        if (!mounted) return;
         setState(() {
           _msg = e.message;
-          _stage = _Stage.guardadoOffline;
+          _stage = _Stage.sinConexion;
         });
       } else {
         setState(() {
@@ -86,6 +89,12 @@ class _UploadScreenState extends State<UploadScreen> {
           _stage = _Stage.error;
         });
       }
+    } on PdfTooLargeException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _grande = e;
+        _stage = _Stage.demasiado;
+      });
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -93,6 +102,13 @@ class _UploadScreenState extends State<UploadScreen> {
         _stage = _Stage.error;
       });
     }
+  }
+
+  Future<void> _reingresar() async {
+    final ok = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(builder: (_) => const LoginScreen(modal: true)),
+    );
+    if (ok == true && mounted) _run();
   }
 
   void _finish() {
@@ -157,6 +173,8 @@ class _UploadScreenState extends State<UploadScreen> {
               const SizedBox(height: 6),
               Text('${widget.paths.length} página(s) · Pieza #${widget.info.id}',
                   style: const TextStyle(color: Brand.muted)),
+              const SizedBox(height: 14),
+              _SizeNote(info: gen ? null : _build),
             ],
           ),
         );
@@ -184,15 +202,42 @@ class _UploadScreenState extends State<UploadScreen> {
           onPrimary: _finish,
         );
 
-      case _Stage.guardadoOffline:
+      case _Stage.sinConexion:
         return _Result(
           icon: Icons.cloud_off_rounded,
           color: Brand.warn,
           title: 'Sin conexión',
-          body: '$_msg\n\nEl PDF quedó guardado en el dispositivo. Podrás enviarlo desde la pantalla '
-              'de inicio cuando vuelva la conexión.',
-          primaryLabel: 'Ir al inicio',
-          onPrimary: _finish,
+          body: '$_msg\n\nEl documento no se pierde mientras sigas en esta pantalla. Verifica tu señal '
+              'y reintenta: hasta que no se suba no se puede tomar otro.',
+          primaryLabel: 'Reintentar',
+          onPrimary: _run,
+          secondaryLabel: 'Volver',
+          onSecondary: () => Navigator.pop(context),
+        );
+
+      case _Stage.sesion:
+        return _Result(
+          icon: Icons.lock_clock_rounded,
+          color: Brand.warn,
+          title: 'Sesión vencida',
+          body: 'Tu sesión venció. Inicia sesión de nuevo y el documento se enviará automáticamente.',
+          primaryLabel: 'Iniciar sesión',
+          onPrimary: _reingresar,
+          secondaryLabel: 'Volver',
+          onSecondary: () => Navigator.pop(context),
+        );
+
+      case _Stage.demasiado:
+        final g = _grande!;
+        return _Result(
+          icon: Icons.warning_amber_rounded,
+          color: Brand.warn,
+          title: 'El PDF supera el límite',
+          body: 'Con ${g.pages} páginas pesa ${_mb(g.bytes)} MB, incluso con la calidad reducida al mínimo '
+              'aceptable, y el límite por subida es de ${AppConfig.maxPdfMb} MB.\n\n'
+              'Vuelve a la galería y quita algunas páginas para poder subirlo.',
+          primaryLabel: 'Volver a la galería',
+          onPrimary: () => Navigator.pop(context),
         );
 
       case _Stage.error:
@@ -255,6 +300,41 @@ class _Result extends StatelessWidget {
           ],
         ],
       ),
+    );
+  }
+}
+
+String _mb(int bytes) => (bytes / 1048576).toStringAsFixed(1).replaceAll('.', ',');
+
+/// Aviso informativo: límite de subida y, cuando ya está armado, el peso real del PDF.
+class _SizeNote extends StatelessWidget {
+  final PdfBuild? info;
+  const _SizeNote({this.info});
+
+  @override
+  Widget build(BuildContext context) {
+    final b = info;
+    final lines = <String>[
+      if (b != null) 'PDF listo: ${_mb(b.bytes)} MB de ${AppConfig.maxPdfMb} MB permitidos',
+      if (b == null) 'Límite de subida: ${AppConfig.maxPdfMb} MB por documento',
+      if (b != null && b.forzado)
+        'Se redujo la calidad al mínimo para ajustarse al límite.'
+      else if (b != null && b.reducido)
+        'Algunas páginas se optimizaron para ajustarse al límite.',
+    ];
+    return Column(
+      children: [
+        for (final l in lines)
+          Padding(
+            padding: const EdgeInsets.only(top: 2),
+            child: Text(l,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 13,
+                  color: (b != null && b.forzado) ? Brand.warn : Brand.muted,
+                )),
+          ),
+      ],
     );
   }
 }

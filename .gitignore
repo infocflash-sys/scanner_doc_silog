@@ -46,3 +46,7 @@ APP/build_log.txt
 
 # Capturas/imágenes personales sueltas (pueden contener datos personales)
 WhatsApp Image*
+
+# Copias del servidor (contienen credenciales)
+backup_servidor/
+deploy/

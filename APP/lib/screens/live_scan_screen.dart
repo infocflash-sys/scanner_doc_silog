@@ -8,24 +8,18 @@ import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../core/theme.dart';
-import '../services/live_detector.dart';
+import '../models/models.dart';
+import '../services/capture_flow.dart';
 
 class LiveScanResult {
-  final List<String> paths;
+  final List<ScanPage> pages; // páginas ya recortadas y procesadas
   final bool useSystemCamera;
-  const LiveScanResult(this.paths, {this.useSystemCamera = false});
+  const LiveScanResult(this.pages, {this.useSystemCamera = false});
 }
 
-class _Live {
-  final LiveQuad? quad;
-  final Nv21Image? img;
-  final double stable; // 0..1
-  const _Live(this.quad, this.img, this.stable);
-}
-
-/// Cámara en vivo: detecta la hoja en tiempo real, la resalta y, cuando está firme y enfocada,
-/// dispara sola (opcional). La foto final se toma a resolución completa; el análisis en vivo
-/// usa un frame pequeño para ser fluido.
+/// Cámara con disparador MANUAL (como CamScanner): enfoca y toma la foto al tocar el botón;
+/// enseguida se abre la pantalla para ubicar las esquinas con el dedo y la página se procesa
+/// con esos límites. Luego se vuelve a la cámara para la siguiente página.
 class LiveScanScreen extends StatefulWidget {
   final int limit;
   const LiveScanScreen({super.key, required this.limit});
@@ -35,11 +29,7 @@ class LiveScanScreen extends StatefulWidget {
 }
 
 class _LiveScanScreenState extends State<LiveScanScreen> with SingleTickerProviderStateMixin {
-  static const _framesToLock = 6; // ≈1 s con 6 fps de análisis
-
-  final _live = ValueNotifier<_Live>(const _Live(null, null, 0));
-  final _auto = ValueNotifier<bool>(true);
-  final _shots = ValueNotifier<List<String>>([]);
+  final _pages = ValueNotifier<List<ScanPage>>([]);
   late final AnimationController _flash;
 
   String? _tmp;
@@ -48,13 +38,6 @@ class _LiveScanScreenState extends State<LiveScanScreen> with SingleTickerProvid
   bool _showFallback = false;
   bool _capturing = false;
   Timer? _readyTimer;
-
-  List<double>? _prev;
-  List<double>? _lastShot;
-  int _stable = 0;
-  int _misses = 0;
-  bool _seenGap = true;
-  DateTime _cooldown = DateTime.fromMillisecondsSinceEpoch(0);
 
   @override
   void initState() {
@@ -76,70 +59,9 @@ class _LiveScanScreenState extends State<LiveScanScreen> with SingleTickerProvid
   void dispose() {
     _readyTimer?.cancel();
     _flash.dispose();
-    _live.dispose();
-    _auto.dispose();
-    _shots.dispose();
+    _pages.dispose();
     SystemChrome.setPreferredOrientations(DeviceOrientation.values);
     super.dispose();
-  }
-
-  // ───────────── análisis en vivo ─────────────
-
-  Future<void> _onImage(AnalysisImage image) async {
-    final nv = image.when(nv21: (i) => i);
-    if (nv == null || !mounted) return;
-
-    final rot = switch (nv.rotation) {
-      InputAnalysisImageRotation.rotation90deg => 90,
-      InputAnalysisImageRotation.rotation180deg => 180,
-      InputAnalysisImageRotation.rotation270deg => 270,
-      _ => 0,
-    };
-
-    final q = LiveDocDetector.detect(nv.bytes, nv.width, nv.height, rot);
-
-    if (q == null) {
-      _misses++;
-      if (_misses >= 3) {
-        _stable = 0;
-        _prev = null;
-        _seenGap = true;
-        _live.value = const _Live(null, null, 0);
-      }
-      return;
-    }
-    _misses = 0;
-
-    var delta = 1.0;
-    if (_prev != null) {
-      delta = 0;
-      for (var i = 0; i < 8; i++) {
-        delta = math.max(delta, (q.pts[i] - _prev![i]).abs());
-      }
-    }
-    _stable = delta < 0.03 ? _stable + 1 : math.max(0, _stable - 2);
-    _prev = q.pts;
-
-    final ratio = (_stable / _framesToLock).clamp(0.0, 1.0);
-    _live.value = _Live(q, nv, ratio);
-
-    if (_auto.value &&
-        !_capturing &&
-        _stable >= _framesToLock &&
-        DateTime.now().isAfter(_cooldown) &&
-        _isNewPage(q.pts)) {
-      _capture();
-    }
-  }
-
-  /// Evita disparar varias veces sobre la misma hoja: hace falta haberla retirado o movido.
-  bool _isNewPage(List<double> pts) {
-    if (_lastShot == null || _seenGap) return true;
-    var sum = 0.0;
-    for (var i = 0; i < 8; i++) {
-      sum += (pts[i] - _lastShot![i]).abs();
-    }
-    return sum / 8 > 0.08;
   }
 
   // ───────────── captura ─────────────
@@ -147,35 +69,42 @@ class _LiveScanScreenState extends State<LiveScanScreen> with SingleTickerProvid
   Future<void> _capture() async {
     final cam = _cam;
     if (cam == null || _capturing || _tmp == null) return;
-    if (_shots.value.length >= widget.limit) {
+    if (_pages.value.length >= widget.limit) {
       _snack('Máximo ${widget.limit} páginas por documento.');
       return;
     }
     _capturing = true;
-    HapticFeedback.mediumImpact();
-    _flash.forward(from: 0).then((_) => _flash.reverse());
     setState(() {});
 
+    String? path;
     try {
       final photo = cam.when(onPhotoMode: (p) => p) as PhotoCameraState?;
       if (photo == null) throw Exception('La cámara no está lista');
+      // Enfoca antes de disparar (como las apps de escaneo) para que el texto salga nítido.
+      try {
+        photo.focus();
+        await Future.delayed(const Duration(milliseconds: 450));
+      } catch (_) {}
+      HapticFeedback.mediumImpact();
+      _flash.forward(from: 0).then((_) => _flash.reverse());
       final req = await photo.takePhoto();
-      final path = req.path;
-      if (path != null && File(path).existsSync()) {
-        _shots.value = [..._shots.value, path];
-      } else {
+      path = req.path;
+      if (path == null || !File(path).existsSync()) {
+        path = null;
         _snack('No se pudo guardar la foto. Intenta de nuevo.');
       }
     } catch (e) {
       _snack('Error al capturar: $e');
-    } finally {
-      _capturing = false;
-      _cooldown = DateTime.now().add(const Duration(milliseconds: 1800));
-      _lastShot = _prev;
-      _seenGap = false;
-      _stable = 0;
-      if (mounted) setState(() {});
     }
+
+    // Ubicar esquinas + procesar esa página (pantalla propia); luego se vuelve a la cámara.
+    if (path != null && mounted) {
+      final page = await procesarFoto(context, path);
+      if (page != null && mounted) _pages.value = [..._pages.value, page];
+    }
+
+    _capturing = false;
+    if (mounted) setState(() {});
   }
 
   void _snack(String m) {
@@ -183,32 +112,25 @@ class _LiveScanScreenState extends State<LiveScanScreen> with SingleTickerProvid
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
   }
 
-  void _done() => Navigator.pop(context, LiveScanResult(List.of(_shots.value)));
+  void _done() => Navigator.pop(context, LiveScanResult(List.of(_pages.value)));
 
   Future<void> _close() async {
-    if (_shots.value.isEmpty) {
+    if (_pages.value.isEmpty) {
       Navigator.pop(context);
       return;
     }
     final discard = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('¿Descartar fotos?'),
-        content: Text('Tienes ${_shots.value.length} foto(s) tomadas. Si sales, se perderán.'),
+        title: const Text('¿Descartar páginas?'),
+        content: Text('Tienes ${_pages.value.length} página(s) procesadas. Si sales, se perderán.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Seguir')),
           FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Descartar')),
         ],
       ),
     );
-    if (discard == true && mounted) {
-      for (final s in _shots.value) {
-        try {
-          File(s).deleteSync();
-        } catch (_) {}
-      }
-      Navigator.pop(context);
-    }
+    if (discard == true && mounted) Navigator.pop(context);
   }
 
   // ───────────── UI ─────────────
@@ -238,11 +160,6 @@ class _LiveScanScreenState extends State<LiveScanScreen> with SingleTickerProvid
                     ),
                   ),
                   previewFit: CameraPreviewFit.contain,
-                  onImageForAnalysis: _onImage,
-                  imageAnalysisConfig: AnalysisConfig(
-                    maxFramesPerSecond: 6,
-                    androidOptions: const AndroidAnalysisOptions.nv21(width: 480),
-                  ),
                   progressIndicator: const Center(child: CircularProgressIndicator(color: Brand.green)),
                   builder: (state, preview) {
                     _cam = state;
@@ -271,71 +188,43 @@ class _LiveScanScreenState extends State<LiveScanScreen> with SingleTickerProvid
     );
   }
 
-  /// Capa sobre la vista previa: contorno de la hoja, guía y estado.
+  /// Capa sobre la vista previa: guía de encuadre, indicación y flash. El toque sobre la
+  /// imagen enfoca ese punto (lo gestiona la cámara).
   Widget _overlay(CameraState state, AnalysisPreview preview) {
-    return ValueListenableBuilder<_Live>(
-      valueListenable: _live,
-      builder: (context, live, _) {
-        List<Offset>? pts;
-        if (live.quad != null && live.img != null) {
-          final q = live.quad!;
-          pts = [
-            for (var i = 0; i < 4; i++)
-              preview.convertFromImage(
-                Offset(q.pts[i * 2] * q.uprightW, q.pts[i * 2 + 1] * q.uprightH),
-                live.img!,
-                flipXY: false,
-              ),
-          ];
-        }
-        final locked = live.stable >= 1;
-        return Stack(
-          children: [
-            Positioned.fill(
-              child: IgnorePointer(
-                child: CustomPaint(painter: _QuadPainter(pts, locked, preview.rect)),
-              ),
-            ),
-            Positioned(
-              top: 0,
-              left: 0,
-              right: 0,
-              child: SafeArea(
-                child: Padding(
-                  padding: const EdgeInsets.only(top: 64),
-                  child: Center(child: _statusPill(live)),
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: IgnorePointer(child: CustomPaint(painter: _GuidePainter(preview.rect))),
+        ),
+        Positioned(
+          top: 0,
+          left: 0,
+          right: 0,
+          child: SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.only(top: 64),
+              child: Center(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.6),
+                    borderRadius: BorderRadius.circular(22),
+                  ),
+                  child: Text(
+                    _capturing ? 'Enfocando y capturando…' : 'Encuadra la hoja y toca el disparador',
+                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
+                  ),
                 ),
               ),
             ),
-            Positioned(
-              top: 0,
-              right: 16,
-              child: SafeArea(child: _flashButton(state)),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  Widget _statusPill(_Live live) {
-    String text;
-    Color color = Colors.black.withValues(alpha: 0.6);
-    if (_capturing) {
-      text = 'Capturando…';
-    } else if (live.quad == null) {
-      text = 'Apunta a la hoja';
-    } else if (live.stable < 1) {
-      text = 'Mantén firme…';
-    } else {
-      text = _auto.value ? '¡Listo! Capturando…' : 'Toca el botón para capturar';
-      color = Brand.green.withValues(alpha: 0.85);
-    }
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 200),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
-      decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(22)),
-      child: Text(text, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+          ),
+        ),
+        Positioned(
+          top: 0,
+          right: 16,
+          child: SafeArea(child: _flashButton(state)),
+        ),
+      ],
     );
   }
 
@@ -362,27 +251,6 @@ class _LiveScanScreenState extends State<LiveScanScreen> with SingleTickerProvid
           children: [
             _CircleBtn(icon: Icons.close_rounded, onTap: _close),
             const Spacer(),
-            ValueListenableBuilder<bool>(
-              valueListenable: _auto,
-              builder: (_, on, _) => GestureDetector(
-                onTap: () => _auto.value = !on,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                  decoration: BoxDecoration(
-                    color: on ? Brand.green.withValues(alpha: 0.9) : Colors.black.withValues(alpha: 0.55),
-                    borderRadius: BorderRadius.circular(22),
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(Icons.auto_awesome_rounded, size: 18, color: Colors.white),
-                      const SizedBox(width: 6),
-                      Text(on ? 'Auto' : 'Manual',
-                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
-                    ],
-                  ),
-                ),
-              ),
-            ),
             const SizedBox(width: 56), // lugar del flash (lo dibuja la capa de la cámara)
           ],
         ),
@@ -407,14 +275,14 @@ class _LiveScanScreenState extends State<LiveScanScreen> with SingleTickerProvid
           top: false,
           child: Padding(
             padding: const EdgeInsets.fromLTRB(24, 28, 24, 16),
-            child: ValueListenableBuilder<List<String>>(
-              valueListenable: _shots,
-              builder: (context, shots, _) => Row(
+            child: ValueListenableBuilder<List<ScanPage>>(
+              valueListenable: _pages,
+              builder: (context, pages, _) => Row(
                 children: [
                   Expanded(
                     child: Align(
                       alignment: Alignment.centerLeft,
-                      child: shots.isEmpty
+                      child: pages.isEmpty
                           ? const SizedBox(width: 56)
                           : Stack(
                               clipBehavior: Clip.none,
@@ -422,7 +290,7 @@ class _LiveScanScreenState extends State<LiveScanScreen> with SingleTickerProvid
                                 ClipRRect(
                                   borderRadius: BorderRadius.circular(12),
                                   child: Image.file(
-                                    File(shots.last),
+                                    File(pages.last.out),
                                     width: 56,
                                     height: 56,
                                     fit: BoxFit.cover,
@@ -435,7 +303,7 @@ class _LiveScanScreenState extends State<LiveScanScreen> with SingleTickerProvid
                                   child: CircleAvatar(
                                     radius: 11,
                                     backgroundColor: Brand.green,
-                                    child: Text('${shots.length}',
+                                    child: Text('${pages.length}',
                                         style: const TextStyle(
                                             color: Colors.white, fontSize: 12, fontWeight: FontWeight.w800)),
                                   ),
@@ -448,10 +316,10 @@ class _LiveScanScreenState extends State<LiveScanScreen> with SingleTickerProvid
                   Expanded(
                     child: Align(
                       alignment: Alignment.centerRight,
-                      child: shots.isEmpty
+                      child: pages.isEmpty
                           ? const SizedBox(width: 56)
                           : GestureDetector(
-                              onTap: _done,
+                              onTap: _capturing ? null : _done,
                               child: Container(
                                 width: 56,
                                 height: 56,
@@ -471,33 +339,27 @@ class _LiveScanScreenState extends State<LiveScanScreen> with SingleTickerProvid
   }
 
   Widget _shutter() {
-    return ValueListenableBuilder<_Live>(
-      valueListenable: _live,
-      builder: (context, live, _) => GestureDetector(
-        onTap: _capturing ? null : _capture,
-        child: SizedBox(
-          width: 82,
-          height: 82,
-          child: Stack(
-            alignment: Alignment.center,
-            children: [
-              SizedBox.expand(
-                child: CircularProgressIndicator(
-                  value: _auto.value && live.quad != null ? live.stable : 0,
-                  strokeWidth: 5,
-                  strokeCap: StrokeCap.round,
-                  backgroundColor: Colors.white.withValues(alpha: 0.35),
-                  color: Brand.green,
-                ),
+    return GestureDetector(
+      onTap: _capturing ? null : _capture,
+      child: SizedBox(
+        width: 82,
+        height: 82,
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            Container(
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.white.withValues(alpha: 0.85), width: 5),
               ),
-              AnimatedContainer(
-                duration: const Duration(milliseconds: 150),
-                width: _capturing ? 52 : 62,
-                height: _capturing ? 52 : 62,
-                decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle),
-              ),
-            ],
-          ),
+            ),
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 150),
+              width: _capturing ? 52 : 62,
+              height: _capturing ? 52 : 62,
+              decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle),
+            ),
+          ],
         ),
       ),
     );
@@ -557,59 +419,38 @@ class _CircleBtn extends StatelessWidget {
       );
 }
 
-class _QuadPainter extends CustomPainter {
-  final List<Offset>? pts;
-  final bool locked;
+/// Guía de encuadre: cuatro esquinas sobre la vista previa.
+class _GuidePainter extends CustomPainter {
   final Rect previewRect;
-  const _QuadPainter(this.pts, this.locked, this.previewRect);
+  const _GuidePainter(this.previewRect);
 
   @override
   void paint(Canvas canvas, Size size) {
-    if (pts == null) {
-      // Guía de encuadre mientras no hay hoja
-      final w = previewRect.width * 0.78;
-      final h = math.min(previewRect.height * 0.8, w * 1.41);
-      final r = Rect.fromCenter(center: previewRect.center, width: w, height: h);
-      const len = 34.0;
-      final p = Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 4
-        ..strokeCap = StrokeCap.round
-        ..color = Colors.white.withValues(alpha: 0.55);
-      final path = Path()
-        ..moveTo(r.left, r.top + len)
-        ..lineTo(r.left, r.top)
-        ..lineTo(r.left + len, r.top)
-        ..moveTo(r.right - len, r.top)
-        ..lineTo(r.right, r.top)
-        ..lineTo(r.right, r.top + len)
-        ..moveTo(r.right, r.bottom - len)
-        ..lineTo(r.right, r.bottom)
-        ..lineTo(r.right - len, r.bottom)
-        ..moveTo(r.left + len, r.bottom)
-        ..lineTo(r.left, r.bottom)
-        ..lineTo(r.left, r.bottom - len);
-      canvas.drawPath(path, p);
-      return;
-    }
-
-    final color = locked ? Brand.green : Brand.warn;
-    final quad = Path()..addPolygon(pts!, true);
-    canvas.drawPath(quad, Paint()..color = color.withValues(alpha: locked ? 0.26 : 0.16));
-    canvas.drawPath(
-      quad,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 3.5
-        ..strokeJoin = StrokeJoin.round
-        ..color = color,
-    );
-    for (final p in pts!) {
-      canvas.drawCircle(p, 8, Paint()..color = Colors.white);
-      canvas.drawCircle(p, 5, Paint()..color = color);
-    }
+    final w = previewRect.width * 0.82;
+    final h = math.min(previewRect.height * 0.82, w * 1.41);
+    final r = Rect.fromCenter(center: previewRect.center, width: w, height: h);
+    const len = 34.0;
+    final p = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 4
+      ..strokeCap = StrokeCap.round
+      ..color = Colors.white.withValues(alpha: 0.6);
+    final path = Path()
+      ..moveTo(r.left, r.top + len)
+      ..lineTo(r.left, r.top)
+      ..lineTo(r.left + len, r.top)
+      ..moveTo(r.right - len, r.top)
+      ..lineTo(r.right, r.top)
+      ..lineTo(r.right, r.top + len)
+      ..moveTo(r.right, r.bottom - len)
+      ..lineTo(r.right, r.bottom)
+      ..lineTo(r.right - len, r.bottom)
+      ..moveTo(r.left + len, r.bottom)
+      ..lineTo(r.left, r.bottom)
+      ..lineTo(r.left, r.bottom - len);
+    canvas.drawPath(path, p);
   }
 
   @override
-  bool shouldRepaint(_QuadPainter old) => true;
+  bool shouldRepaint(_GuidePainter old) => old.previewRect != previewRect;
 }

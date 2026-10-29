@@ -5,6 +5,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
     fail('Método no permitido', 405);
 }
 
+$auth = require_auth();
 $c = cfg();
 $id_pieza = sanitize_id($_POST['id_pieza'] ?? '');
 
@@ -58,7 +59,8 @@ if (trim((string)($row['docum_file'] ?? '')) !== '') {
 }
 
 // ---- Guardado atómico: 'x' falla si el archivo ya existe (evita carreras y sobrescrituras) ----
-$file_name = $id_pieza . '.pdf';
+// <id_pieza>-<id_usuario>.pdf: queda registrado quién subió el documento.
+$file_name = $id_pieza . '-' . (int)$auth['id'] . '.pdf';
 $target = rtrim($c['target_dir'], '/\\') . DIRECTORY_SEPARATOR . $file_name;
 
 $out = @fopen($target, 'x');

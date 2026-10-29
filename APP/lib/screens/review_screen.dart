@@ -10,18 +10,17 @@ import '../models/models.dart';
 import '../services/image_service.dart';
 import '../services/capture_flow.dart';
 import '../widgets/common.dart';
+import '../widgets/segment_ring.dart';
 import 'crop_screen.dart';
 import 'upload_screen.dart';
 
 class ReviewScreen extends StatefulWidget {
   final PiezaInfo info;
-  final List<String> initialPaths;
-  final bool autoDetect;
+  final List<ScanPage> initialPages;
   const ReviewScreen({
     super.key,
     required this.info,
-    required this.initialPaths,
-    this.autoDetect = false,
+    required this.initialPages,
   });
 
   @override
@@ -30,7 +29,6 @@ class ReviewScreen extends StatefulWidget {
 
 class _ReviewScreenState extends State<ReviewScreen> {
   final List<ScanPage> _pages = [];
-  int _nextId = 0;
   int? _selId;
   String _tmp = '';
   bool _adding = false;
@@ -44,63 +42,40 @@ class _ReviewScreenState extends State<ReviewScreen> {
 
   bool get _anyBusy => _pages.any((p) => p.busy);
 
+  // Aro de progreso de los reprocesos (filtro, giro o recorte): una barrita por tarea.
+  int _bTotal = 0;
+  int _bDone = 0;
+
+  void _taskEnd() {
+    if (!mounted) return;
+    setState(() => _bDone++);
+    if (_bDone >= _bTotal) {
+      // Deja ver el aro completo un instante y lo oculta.
+      Future.delayed(const Duration(milliseconds: 500), () {
+        if (mounted && _bDone >= _bTotal) {
+          setState(() {
+            _bTotal = 0;
+            _bDone = 0;
+          });
+        }
+      });
+    }
+  }
+
   @override
   void initState() {
     super.initState();
-    _init();
+    // Las páginas llegan ya recortadas y procesadas: la galería no tiene cola de procesamiento.
+    _pages.addAll(widget.initialPages);
+    _selId = _pages.isNotEmpty ? _pages.first.id : null;
+    getTemporaryDirectory().then((d) => _tmp = d.path);
   }
 
-  Future<void> _init() async {
-    _tmp = (await getTemporaryDirectory()).path;
-    _addPaths(widget.initialPaths, autoDetect: widget.autoDetect);
-  }
-
-  void _addPaths(List<String> paths, {required bool autoDetect}) {
-    final added = <ScanPage>[];
-    for (final src in paths) {
-      added.add(ScanPage(id: _nextId++, src: src, autoDetect: autoDetect, busy: true));
-    }
+  Future<void> _reprocess(ScanPage p, {bool track = true}) async {
     setState(() {
-      _pages.addAll(added);
-      _selId ??= added.isNotEmpty ? added.first.id : null;
+      p.busy = true;
+      if (track) _bTotal++;
     });
-    for (final p in added) {
-      _prepare(p);
-    }
-  }
-
-  /// Orienta la imagen, detecta la hoja (si corresponde) y genera la versión procesada.
-  Future<void> _prepare(ScanPage p) async {
-    setState(() => p.busy = true);
-    try {
-      final base = await ImageService.prepararBase(p.src, '$_tmp/base_${p.id}.jpg');
-      p.base = base.path;
-      p.bw = base.w;
-      p.bh = base.h;
-      if (p.autoDetect) {
-        p.corners = await ImageService.detectar(p.base);
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text(p.corners != null
-                ? 'Hoja detectada y enderezada. Usa ✂ para ajustar el recorte.'
-                : 'No se detectó el borde de la hoja. Usa ✂ para recortarla.'),
-          ));
-        }
-      }
-    } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No se pudo leer una de las imágenes.')),
-        );
-      }
-      if (mounted) setState(() => p.busy = false);
-      return;
-    }
-    await _reprocess(p);
-  }
-
-  Future<void> _reprocess(ScanPage p) async {
-    setState(() => p.busy = true);
     try {
       final dst = '$_tmp/pg_${p.id}_${DateTime.now().microsecondsSinceEpoch}.jpg';
       final old = p.out;
@@ -124,6 +99,7 @@ class _ReviewScreenState extends State<ReviewScreen> {
       }
     } finally {
       if (mounted) setState(() => p.busy = false);
+      if (track) _taskEnd();
     }
   }
 
@@ -185,7 +161,12 @@ class _ReviewScreenState extends State<ReviewScreen> {
     setState(() => _adding = true);
     try {
       final res = await capturar(context, limit: left, galeria: galeria);
-      if (res != null && mounted) _addPaths(res.paths, autoDetect: res.autoDetect);
+      if (res != null && res.isNotEmpty && mounted) {
+        setState(() {
+          _pages.addAll(res);
+          _selId = res.first.id;
+        });
+      }
     } finally {
       if (mounted) setState(() => _adding = false);
     }
@@ -211,7 +192,7 @@ class _ReviewScreenState extends State<ReviewScreen> {
               _MenuTile(
                 icon: Icons.document_scanner_rounded,
                 title: 'Escanear con cámara',
-                subtitle: 'Detección de bordes automática',
+                subtitle: 'Tomas la foto y marcas las esquinas',
                 onTap: () {
                   Navigator.pop(context);
                   _addMore(galeria: false);
@@ -246,6 +227,37 @@ class _ReviewScreenState extends State<ReviewScreen> {
         child: SafeArea(
           child: Column(
             children: [
+              if (_bTotal > 0)
+                Container(
+                  margin: const EdgeInsets.fromLTRB(16, 2, 16, 8),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: Brand.surface.withValues(alpha: 0.9),
+                    borderRadius: BorderRadius.circular(18),
+                    border: Border.all(color: Brand.border),
+                  ),
+                  child: Row(
+                    children: [
+                      SegmentRing(total: _bTotal, done: _bDone),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              _bDone >= _bTotal ? 'Listo' : 'Procesando páginas…',
+                              style: const TextStyle(fontWeight: FontWeight.w700, color: Brand.text),
+                            ),
+                            Text(
+                              '${_bDone.clamp(0, _bTotal)} de $_bTotal',
+                              style: const TextStyle(color: Brand.muted, fontSize: 13),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               // Vista previa con zoom para comprobar legibilidad
               Expanded(
                 child: Container(
@@ -417,7 +429,19 @@ class _ReviewScreenState extends State<ReviewScreen> {
               ),
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 6, 16, 16),
-                child: GradientButton(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: Text(
+                        'Límite de subida: ${AppConfig.maxPdfMb} MB por documento. Si lo supera, se reducirá '
+                        'la calidad o tendrás que quitar páginas.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(fontSize: 12, color: Brand.muted.withValues(alpha: 0.9)),
+                      ),
+                    ),
+                    GradientButton(
                   label: 'Generar y subir PDF',
                   icon: Icons.cloud_upload_rounded,
                   onPressed: (_pages.isEmpty || _anyBusy)
@@ -431,6 +455,8 @@ class _ReviewScreenState extends State<ReviewScreen> {
                               ),
                             ),
                           ),
+                    ),
+                  ],
                 ),
               ).animate().fadeIn(),
             ],

@@ -1,6 +1,7 @@
 <?php
 require __DIR__ . '/../config.php';
 
+require_auth();
 $id_pieza = sanitize_id($_GET['id_pieza'] ?? '');
 
 $conn = db();

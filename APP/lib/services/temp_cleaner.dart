@@ -5,7 +5,7 @@ import 'package:path_provider/path_provider.dart';
 /// Borra los archivos temporales que genera el flujo de escaneo (fotos de la cámara,
 /// imágenes base/procesadas, copias del selector y PDFs) para no acumular espacio.
 ///
-/// Los PDFs pendientes de envío viven en el directorio de documentos de la app, no aquí.
+/// Solo limpia temporales; los PDF se arman en el temporal y se suben en el momento.
 class TempCleaner {
   static final _images = RegExp(r'^(cap_|base_|pg_|image_picker|scaled_).*\.(jpe?g|png)$', caseSensitive: false);
 
