@@ -286,3 +286,11 @@ grandes que se mueven con el dedo, con lupa; propone las esquinas detectadas per
 progreso → la página entra **ya terminada** a la galería (`ReviewScreen.initialPages`), que ya no tiene cola de
 procesamiento (solo reprocesa al cambiar filtro, girar o re-recortar). Galería del teléfono: mismo paso, foto por foto.
 `capture_flow.procesarFoto()` concentra el flujo. Se retoma con «Volver a tomar».
+
+## 19. Estado de cierre (2026-10-29)
+
+Versión 1.1.0+2 (build 2); APK arm64 de las 10:00. Commit `4d9ffdb` local, sin subir a GitHub.
+Pendientes: rotar claves expuestas (BD, FTP, usuarios de prueba) y actualizar `config.local.php` del servidor; subir el
+commit; borrar `APP/upload_doc.php` (copia vieja con credenciales); pruebas de campo (11–20 páginas, pieza con PDF,
+nombre `<pieza>-<usuario>.pdf`, bloqueo de login, BlockedScreen, sesión al minimizar, esquinas con el dedo);
+limpiar la web vieja del servidor; keystore de release.
